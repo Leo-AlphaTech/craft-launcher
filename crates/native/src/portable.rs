@@ -205,6 +205,43 @@ pub fn install(
     let unpacked = staging.0.join("unpacked");
     std::fs::create_dir(&unpacked).map_err(|e| e.to_string())?;
     let files = extract(file, &unpacked)?;
+    // Check if the executable is already at the root of the ZIP.
+    let has_root_executable = files.iter().any(|relative| {
+        relative.parent().is_some_and(|p| p.as_os_str().is_empty())
+            && relative
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| app.stems().any(|stem| name.eq_ignore_ascii_case(&format!("{stem}.exe"))))
+    });
+
+    // If not found at the root, check if the archive is wrapped in a single enclosing folder.
+    let (unpacked, files) = if !has_root_executable {
+        let common_folder = files.first().and_then(|first| {
+            let mut components = first.components();
+            match (components.next(), components.next()) {
+                (Some(Component::Normal(first_dir)), Some(_)) => Some(PathBuf::from(first_dir)),
+                _ => None,
+            }
+        });
+
+        if let Some(prefix) = common_folder {
+            if files.iter().all(|f| f.starts_with(&prefix)) {
+                let mut stripped = Vec::with_capacity(files.len());
+                for f in files {
+                    let rel = f.strip_prefix(&prefix).map_err(|e| e.to_string())?.to_path_buf();
+                    stripped.push(rel);
+                }
+                (unpacked.join(prefix), stripped)
+            } else {
+                (unpacked, files)
+            }
+        } else {
+            (unpacked, files)
+        }
+    } else {
+        (unpacked, files)
+    };
+
     let executable = files
         .iter()
         .find(|relative| {
